@@ -1,1 +1,1 @@
-web: vendor/bin/heroku-php-apache2 web_design/
+web: vendor/bin/heroku-php-apache2 /
