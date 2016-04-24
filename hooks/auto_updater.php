@@ -39,9 +39,9 @@ if (!is_master_branch_commit($payload))
 	exit("No action required, not pushed to master branch");
 $token = get_oauth_token();
 $actionable_files = get_actionable_files($payload);
-for ($actionable_files['remove'] as $deleted_file)
+foreach ($actionable_files['remove'] as $deleted_file)
 	delete_file_reddit($deleted_file);
-for ($actionable_files['upload'] as $upload_file)
+foreach ($actionable_files['upload'] as $upload_file)
 	upload_file_reddit($upload_file);
 }
 
@@ -229,7 +229,7 @@ function api_upload_request($upload_type, $path, $token) {
  * @param token OAUTH token.
  */
 function delete_file_reddit($delete_list, $token) {
-	for ($delete_list as $deleted_file) {
+	foreach ($delete_list as $deleted_file) {
 		if (is_stylesheet($deleted_file))
 		
 		else
