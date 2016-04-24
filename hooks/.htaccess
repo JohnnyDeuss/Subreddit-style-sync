@@ -1,0 +1,4 @@
+<Directory />
+	Satisfy Any
+	Allow from all
+</Directory>
