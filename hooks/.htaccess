@@ -1,4 +1,6 @@
-<Directory />
-	Satisfy Any
+<Directory "/hooks">
+	Options Indexes FollowSymLinks
+	AllowOverride All
+	Order allow,deny
 	Allow from all
 </Directory>
