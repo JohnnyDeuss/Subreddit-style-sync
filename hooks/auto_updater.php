@@ -9,41 +9,53 @@
  * and the reddit API:
  * @see https://www.reddit.com/dev/api
  *
- * NOTES:
+ * GETTING IT TO WORK:
  *
- * Before this hook will work, the Webhook needs to be added on GitHub for
- * the push event:
+ * The script assumes it is in a directory pulled from GitHub, so the 'git'
+ * command is available. You need to set up git so it doesn't need to
+ * authenticate, either by setting up the default username and password
+ * or by using a deploy key. It also assumes it is placed in the root of the
+ * git repo.
+ *
+ * To get GitHub to send POST request to this script, the Webhook needs to be
+ * added on GitHub for the push event:
  * @see https://developer.github.com/webhooks/creating/#setting-up-a-webhook
+ *
  * For security reasons, you should set the secret field, the server hosting
  * this script should have a SECRET_TOKEN environment variable set to the
  * same value.
  * @see https://developer.github.com/webhooks/securing/
  * 
- * The config.php file must be filled in with and holds the configuration for
- * this script. This config file MUST NOT be placed within the web root MUST
+ * The config.php file must be filled in and holds the configuration for
+ * this script. The config file MUST NOT be placed within the web root MUST
  * NOT be accessible though the web server!
  * (Pushing credentials to git or setting them in the webroot is bad, mkay?)
  * The path to the config file on the server must be given in the CONFIG_FILE
  * constant below.
  */
- define('CONFIG_FILE', 'PATH_TO_CONFIG_PHP_NOT_IN_WEB_ROOT');
- require CONFIG_FILE;
- 
+//TODO: define('CONFIG_FILE', 'PATH_TO_CONFIG_PHP_NOT_IN_WEB_ROOT');
+define('CONFIG_FILE', 'config.php');
+require CONFIG_FILE;
+
+define('USER_AGENT_STRING', 'web_design-stylesheet-updater/0.1');
+
 // PHP sends JSON in the POST body, not the standard POST key-value pairs, but as JSON.
-$raw_payload = $postdata = file_get_contents('php://input');
-if (!is_verified_sender($raw_payload))
-	exit("The sender could not be verified.");
+$raw_payload = file_get_contents('php://input');
+if (!is_verified_sender($raw_payload, $config['github']['secret_token']))
+	exit("The secret is wrong, failed to verify sender.");
 // Parse the JSON payload.
 $payload = json_decode($raw_payload);
 if (!is_master_branch_commit($payload))
-	exit("No action required, not pushed to master branch");
+	exit("No action required, not pushed to master branch.");
+// Get the OAUTH token to be able to use the reddit API.
 $token = get_oauth_token();
 $actionable_files = get_actionable_files($payload);
-foreach ($actionable_files['remove'] as $deleted_file)
-	delete_file_reddit($deleted_file);
-foreach ($actionable_files['upload'] as $upload_file)
-	upload_file_reddit($upload_file);
-}
+// Checkout the correct git commit so that we can upload them.
+$commit_id = $payload['after'];
+git_init($commit_id);
+// Upload new/modified files and delete deleted ones.
+upload_files_reddit($actionable_files['upload'], $commit_id);
+delete_files_reddit($actionable_files['delete'], $commit_id);
 
 /*
  * Compare two commits based on their timestamp.
@@ -52,7 +64,7 @@ foreach ($actionable_files['upload'] as $upload_file)
  * @return 0 if $a=$b, -1 if $a<$b and 1 if $a>$b.
  */
 function compare_commit($a, $b) {
-	return strtotime($a['timestamp']) <=> strtotime($b['timestamp']);
+	return strcmp(strtotime($a['timestamp']), strtotime($b['timestamp']));
 }
 
 /*
@@ -61,6 +73,7 @@ function compare_commit($a, $b) {
  * @return Whether the file is an asset or stylesheet.
  */
 function file_filter($file) {
+	$config = $GLOBALS['config'];
 	// Get the directory part, to check if the file is inside the assets directory.
 	$dir = pathinfo($file, PATHINFO_DIRNAME);
 	return $file == $config['github']['stylesheet'] or								// Stylesheet.
@@ -74,38 +87,157 @@ function file_filter($file) {
  * @return Whether the file is in a valid image format.
  */
 function is_valid_image_format($path) {
+	$extension = pathinfo($path, PATHINFO_EXTENSION);
 	// Only JPG and PNG are supported, ignore the rest.
 	return strtolower($extension) == "jpg" or strtolower($extension) == "png";
 }
 
 /*
+ * Determine what kind of image upload to perform.
+ * @see https://www.reddit.com/dev/api/oauth#POST_api_upload_sr_img
+ * @param path Git path of the image file.
+ * @return The upload type of the file.
+ */
+function get_upload_type($path) {
+	$config = $GLOBALS['config'];
+	if ($path == $config['header_path'])			// Regular header.
+		return 'header';
+	if ($path == $config['header_mobile_path'])		// Mobile header/banner.
+		return 'banner';
+	if ($path == $config['icon_mobile_path'])		// Mobile icon.
+		return 'icon';
+	return 'img';									// Regular image.
+}
+
+function get_authorization_header($token) {
+	return 'Authorization: bearer ' . $token;
+}
+/*
  * Gets an OAUTH token for API authentication.
  */
 function get_oauth_token() {
+	$config = $GLOBALS['config'];
 	$url = 'https://www.reddit.com/api/v1/access_token';
-	header('User-agent: web_design-stylesheet-updater/0.1');
-	header(': web_design-stylesheet-updater/0.1');
-	header('User-agent: web_design-stylesheet-updater/0.1');
 	$data = [
 		'grant_type' => 'password',
-		'passwd' => $password,
-		'username' => $username
+		'password' => $config['oauth']['mod_password'],
+		'username' => $config['oauth']['mod_username']
 	];
+	// OAUTH uses basic access authentication, add in header.
+	$headers = [base64_encode($config['oauth']['client_id'].':'.$config['oauth']['secret'])];
 
-	$options = array(
-		'http' => array(
+	$result = api_post_request($url, $data, $headers);
+	if ($result === FALSE)
+		exit("Could not get an OAUTH token.");
+	return json_decode($result)['access_token'];
+}
+
+/*
+ * Get the URL for a given subreddit.
+ * @param subreddit Name of the subreddit.
+ * @return URL to use for OAUTH for the given subreddit.
+ */
+function get_oauth_url($subreddit) {
+	return 'https://oauth.reddit.com/r/'.$subreddit.'/api/';
+}
+
+/*
+ * Gets an OAUTH token for API authentication.
+ * @param url URL to post to.
+ * @param data Associative array of key-value pairs to pass.
+ * @param headers Array of headers to add.
+ */
+function api_post_request($url, $data, $headers) {
+	$options = [
+		'http' => [
 			'Content-type' => 'application/x-www-form-urlencoded',
 			'method'  => 'POST',
 			'content' => http_build_query($data),
-			'header' => 'Authorization: Basic ' .
-				base64_encode($config['oauth']['client_id'].':'.:$)
-		)
-	);
+			'header' => 'User-agent: '.USER_AGENT_STRING.'\r\n'.
+				(empty($headers) ? '' : implode('\r\n', $headers).'\r\n')
+		]
+	];
 	$context  = stream_context_create($options);
-	$result = file_get_contents($url, false, $context);
-	if ($result === FALSE)
-		exit("Could not get an OAUTH token."); 
-	return decode_json($result)['access_token'];
+	return file_get_contents($url, false, $context);
+}
+
+/*
+ * Send an API POST request to the reddit API for all affected subreddits.
+ * @see https://www.reddit.com/dev/api/oauth#POST_api_upload_sr_img
+ * @param path Git path to the file to POST.
+ * @param token An Oauth token.
+ */
+function api_upload_image($path, $token) {
+	$config = $GLOBALS['config'];
+	$upload_type = get_upload_type($path);
+	$path_parts = pathinfo($path);
+
+	$url = get_oauth_url($config['subreddit_name']).'upload_sr_image';
+	$data = [
+		'file' => file_get_contents($path),
+		'header' => $upload_type == 'header' ? 1 : 0,
+		'img_type' => strtolower($path_parts['extension']),
+		'name' => $path_parts['filename'],
+		'upload_type' => $upload_type,
+	];
+	$result = api_post_request($url, $data, [get_authorization_header($token)]);
+	if ($result === false)
+		error_log('Could not successfully POST file to reddit: '.$path.'\n');
+}
+
+/*
+ * Send an API request to delete an image.
+ * @param path Git path to the file to POST.
+ * @param token An Oauth token.
+ */
+function api_delete_image($path, $token) {
+	$config = $GLOBALS['config'];
+	$img_name = pathinfo($path, PATHINFO_FILENAME);
+
+	$url = get_oauth_url($config['subreddit_name']).'delete_sr_image';
+	$data = [
+		'api_type' => 'json',
+		'name' => $img_name,
+	];
+	$result = api_post_request($url, $data, [get_authorization_header($token)]);
+	if ($result === false)
+		error_log('Could not successfully delelte file from reddit: '.$path.'\n');
+}
+
+/*
+ * Set the subreddit stylesheet.
+ * @param token An Oauth token.
+ * @param content The new content of the stylesheet.
+ */
+function api_subreddit_stylesheet($token, $content) {
+	$config = $GLOBALS['config'];
+	$url = get_oauth_url($config['subreddit_name']).'subreddit_stylesheet';
+	$data = [
+		'api_type' => 'json',
+		'op' => 'save',
+		'reason' => 'GitHub push, automatic stylesheet update',
+		'stylesheet_contents' => $content
+	];
+	$result = api_post_request($url, $data, [get_authorization_header($token)]);
+	if ($result === false)
+		error_log('Could not successfully update reddit stylesheet.\n');
+}
+
+/*
+ * Initialize git if it hasn't already been initialized and
+ * and checkout the given commit.
+ * @param commit_id The ID of the latest commit.
+ */
+function git_init($commit_id) {
+	// Check for a .git directory to know whether a git repo has already been initialized.
+	if (!file_exists('.git'.PATH_SEPARATOR))
+		exit('The script is not in the root of a git repo.');
+	exec('git fetch origin', $output, $retval);
+	if ($retval != 0)
+		exit('Git fetch failed.');
+	exec('git checkout '.$commit_id);
+	if ($retval != 0)
+		exit('Unable to checkout the given commit.');
 }
 
 /*
@@ -115,12 +247,13 @@ function get_oauth_token() {
  * @see https://developer.github.com/webhooks/securing/
  * @return Whether the sender was succesfully verified.
  */
-function is_verified_sender($raw_payload) {
+function is_verified_sender($raw_payload, $secret) {
 	// Verify the POST by comparing the HTTP_X_HUB_SIGNATURE header
 	// with the HMAC hash of the payload.
-	$secret = getenv('SECRET_TOKEN');
-	if ($secret === false)
-		exit("Please set the SECRET_TOKEN environment variable.");
+	if ($secret === NULL) {
+		error_log("Please set the SECRET_TOKEN environment variable.");
+		return true;
+	}
 	$hashed_payload = hash_hmac('sha1', $raw_payload, $secret);
 	if ($hashed_payload === false)
 		exit("The current PHP intallation does not support the required HMAC SHA1 hashing algorithm.");
@@ -145,6 +278,7 @@ function is_master_branch_commit($payload) {
  * @return Whether the file path is that of the stylesheet.
  */
 function is_stylesheet($path) {
+	$config = $GLOBALS['config'];
 	return $path == $config['github']['stylesheet_path'];
 }
 
@@ -161,14 +295,14 @@ function get_actionable_files($payload) {
 	$delete_files = [];		// Files that have to be removed from reddit.
 	
 	// Get a list of commits sorted by ascending timestamp.
-	$commits = usort($payload['commits'], 'compare_commit');
+	usort($payload['commits'], 'compare_commit');
 	// Merge the commits into one list.
-	foreach ($commits as $commit) {
+	foreach ($payload['commits'] as $commit) {
 		// Any files that are removed in this commit need to be removed from the existing
 		// update list, they were added/modified in an already commit, but removed within the same push.
 		$upload_files = array_diff($upload_files, $commit['removed']);
 		// Do the same for deleted files that have now been added again.
-		$deleted_style_files = array_diff($delete_files, $commit['added'], $commit['modified']);
+		$delete_files = array_diff($delete_files, $commit['added'], $commit['modified']);
 		// Expand the update and delete list with the new files.
 		$upload_files = array_merge($upload_files, $commit['added'], $commit['modified']);
 		$delete_files = array_merge($delete_files, $commit['removed']);
@@ -185,53 +319,31 @@ function get_actionable_files($payload) {
 }
 
 /*
- * Get the URL for a given subreddit.
- * @param subreddit Name of the subreddit.
- * @return URL to the given subreddit.
+ * Delete the files in the given list from reddit.
+ * @param delete_list A list of filepaths to delete.
+ * @param token OAUTH token.
  */
-function get_subreddit_url($subreddit) {
-	return 'https://www.reddit.com/r/'.$subreddit;
+function delete_files_reddit($delete_list, $token) {
+	foreach ($delete_list as $deleted_file) {
+		if (is_stylesheet($deleted_file))
+			api_subreddit_stylesheet($token, '');
+		else
+			api_delete_image($deleted_file, $token);
+	}
 }
-
-/*
- * Send an API POST request to the reddit API for all affected subreddits.
- * @param upload_type String identifying the API action to perform,
- *                    see https://www.reddit.com/dev/api#POST_api_upload_sr_img
- * @param path Git path to the file to POST.
- * @param token An Oauth token.
- */
-function api_upload_request($upload_type, $path, $token) {
-	$path_parts = pathinfo($path);
-
-	$url = get_subreddit_url($subreddit).'/api/upload_sr_image';
-	$data = [
-		'header' => $upload_type == header ? 1 : 0,
-		'img_type' => $path_parts['extension'],
-		'name' => $path_parts['filename'],
-		'X-Modhash' => $modhash,
-		'upload_type' => $upload_type,
-	];
-
-	$options = array(
-		'http' => array(
-			'Content-type' => 'application/x-www-form-urlencoded',
-			'method'  => 'POST',
-			'content' => http_build_query($data)
-		)
-	);
-	$context  = stream_context_create($options);
-	$result = file_get_contents($url, false, $context);
-}
-
 /*
  * Delete the files in the given list from reddit.
  * @param delete_list A list of files to delete.
  * @param token OAUTH token.
  */
-function delete_file_reddit($delete_list, $token) {
-	foreach ($delete_list as $deleted_file) {
-		if (is_stylesheet($deleted_file))
-		
+function upload_files_reddit($upload_list, $token) {
+	$config = $GLOBALS['config'];
+	foreach ($upload_list as $upload_file) {
+		if (is_stylesheet($upload_file)) {
+			$content = file_get_contents($config['github']['stylesheet_path']);
+			api_subreddit_stylesheet($token, $content);
+		}
 		else
+			api_upload_image($upload_file, $token);
 	}
 }
