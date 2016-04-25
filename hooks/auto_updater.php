@@ -25,7 +25,7 @@
  * this script should have a SECRET_TOKEN environment variable set to the
  * same value.
  * @see https://developer.github.com/webhooks/securing/
- * 
+ *
  * The config.php file must be filled in and holds the configuration for
  * this script. The config file MUST NOT be placed within the web root MUST
  * NOT be accessible though the web server!
@@ -254,6 +254,7 @@ function is_verified_sender($raw_payload, $secret) {
 		error_log("Please set the SECRET_TOKEN environment variable.");
 		return true;
 	}
+
 	$hashed_payload = hash_hmac('sha1', $raw_payload, $secret);
 	if ($hashed_payload === false)
 		exit("The current PHP intallation does not support the required HMAC SHA1 hashing algorithm.");
@@ -331,6 +332,7 @@ function delete_files_reddit($delete_list, $token) {
 			api_delete_image($deleted_file, $token);
 	}
 }
+
 /*
  * Delete the files in the given list from reddit.
  * @param delete_list A list of files to delete.
