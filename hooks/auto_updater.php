@@ -159,17 +159,60 @@ function get_oauth_sr_api_url($subreddit) {
 }
 
 /*
+ * Build a multipart/form-data query body.
+ * @param data Data to encode.
+ * @param file_path File to encode, i.e. {key => x, path => y}.
+ * @param mime_boundary Boundary to use for encoding.
+ */
+function http_build_multipart_query($data, $file_path, $mime_boundary) {
+	$lines = [];
+	// Generate all lines of the body for the regular data.
+	foreach ($data as $key => $value) {
+		array_push($lines, "--$mime_boundary");
+		array_push($lines, "Content-Disposition: form-data; name=\"$key\"");
+		array_push($lines, "");
+		array_push($lines, $value);
+	}
+
+	// Get filename.
+	$filename = pathinfo($file_path, PATHINFO_BASENAME);
+	$content = file_get_contents($file_path);
+	// Generate the lines for the file.
+	array_push($lines, "--$mime_boundary");
+	array_push($lines, "Content-Disposition: form-data; name=\"file\", filename=\"$filename\"");
+	array_push($lines, "Content-Type: ".mime_content_type($file_path));
+	array_push($lines, "");
+	array_push($lines, $content);
+	// Add final boundary.
+	array_push($lines, "--$mime_boundary--");
+	// Join lines.
+	return implode("\r\n", $lines);
+}
+
+/*
  * Gets an OAUTH token for API authentication.
  * @param url URL to post to.
  * @param data Associative array of key-value pairs to pass.
  * @param headers Array of headers to add.
+ * @param file_path Optional file to transfer in POST.
  */
-function api_post_request($url, $data, $headers) {
-	array_push($headers, 'Content-Type: application/x-www-form-urlencoded');
+function api_post_request($url, $data, $headers, $file_path=NULL) {
+	if ($file_path !== NULL) {
+		// Use MIME multipart if a file is to be sent.
+		$mime_boundary = md5(time());
+		array_push($headers, "Content-Type: multipart/form-data; boundary=$mime_boundary");
+		$content = http_build_multipart_query($data, $file_path, $mime_boundary);
+	}
+	else {
+		// Use the default POST encoding if there is no file.
+		array_push($headers, "Content-Type: application/x-www-form-urlencoded");
+		$content = http_build_query($data);
+	}
+
 	$options = [
 		'http' => [
 			'method'  => 'POST',
-			'content' => http_build_query($data),
+			'content' => $content,
 			'user_agent' => USER_AGENT_STRING,
 			'header' => $headers
 		]
@@ -192,13 +235,13 @@ function api_upload_image($path, $token) {
 
 	$url = get_oauth_sr_api_url($config['subreddit_name']).'/upload_sr_img';
 	$data = [
-//		'file' => file_get_contents($path),
+		'file' => file_get_contents($path),
 		'header' => $upload_type == 'header' ? 1 : 0,
 		'img_type' => strtolower($path_parts['extension']),
 		'name' => $path_parts['filename'],
 		'upload_type' => $upload_type,
 	];
-	$result = api_post_request($url, $data, [get_authorization_header($token)]);
+	$result = api_post_request($url, $data, [get_authorization_header($token)], $path);
 	if ($result === FALSE)
 		error_log("Could not successfully POST file to reddit: $path\n");
 	var_dump($result);
@@ -275,7 +318,6 @@ function api_subreddit_stylesheet($token, $content, $payload) {
 	$result = api_post_request($url, $data, [get_authorization_header($token)]);
 	if ($result === FALSE)
 		error_log("Could not successfully update reddit stylesheet.\n");
-	var_dump($result);
 }
 
 /*
@@ -285,7 +327,6 @@ function api_subreddit_stylesheet($token, $content, $payload) {
  * @return The absolute path to the object according to the web server.
  */
 function git_to_absolute_path($git_path) {
-	var_dump($git_path);
 	static $git_root = NULL;
 	if ($git_root === NULL)
 		exec('git rev-parse --show-toplevel', $git_root);
@@ -400,7 +441,7 @@ function delete_files_reddit($delete_list, $token, $payload) {
 	$is_stylesheet_changed = in_array($github_config['stylesheet_path'], $delete_list);
 	// The assets must be uploaded before the stylesheet itself.
 	if ($is_stylesheet_changed)
-		$upload_list = array_diff($delete_list, [$github_config['stylesheet_path']]);
+		$delete_list = array_diff($delete_list, [$github_config['stylesheet_path']]);
 
 	// Delete deleted assets.
 	foreach ($delete_list as $deleted_file)

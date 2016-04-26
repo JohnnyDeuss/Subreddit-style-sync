@@ -6,7 +6,7 @@ $payload = <<<HERE
 {
   "ref": "refs/heads/master",
   "before": "e4c2753744afa64aec5b626e544026356deea059",
-  "after": "ec91ed7d5f80c030110dea6107cebb2cf054bace",
+  "after": "ed92094362616889f23e1c9c34ba7fa3c531f659",
   "created": false,
   "deleted": false,
   "forced": false,
