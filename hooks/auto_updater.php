@@ -17,6 +17,9 @@
  * For this script to work, fill in the 'config.php' file and set its path in
  * the CONFIG_FILE constant below.
  */
+ini_set('xdebug.var_display_max_depth', -1);
+ini_set('xdebug.var_display_max_children', -1);
+ini_set('xdebug.var_display_max_data', -1);
 define('CONFIG_FILE', 'config.php');
 require CONFIG_FILE;
 
@@ -72,8 +75,8 @@ function file_filter($file) {
 	$github_config = $GLOBALS['config']['github'];
 	// Get the directory part, to check if the file is inside the assets directory.
 	$dir = pathinfo($file, PATHINFO_DIRNAME);
-	return $file == $github_config['stylesheet_path'] or								// Stylesheet.
-		($dir == $github_config['assets_dir'] and is_valid_image_format($file));	// Valid image.
+	return $file == $github_config['stylesheet_path'] or							// Stylesheet.
+		($dir == rtrim($github_config['assets_dir'], '/') and is_valid_image_format($file));	// Valid image.
 }
 
 /*
