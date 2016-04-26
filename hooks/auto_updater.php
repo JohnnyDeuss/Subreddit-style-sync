@@ -259,10 +259,8 @@ function git_init($commit_id) {
 	if ($retval != 0)
 		exit('Git fetch failed. Did you set up git credentials?');
 	exec("git checkout $commit_id", $output, $retval);
-	if ($retval != 0) {
-		var_dump($commit_id);
+	if ($retval != 0)
 		exit('Unable to checkout the given commit.');
-	}
 }
 
 /*
@@ -289,7 +287,7 @@ function is_verified_sender($raw_payload, $secret) {
 	$signature = $headers['X-Hub-Signature'];
 	return hash_equals($hashed_payload, $signature);
 }
-	
+
 /*
  * Check whether the commit happened in the master branch.
  * @param payload The parsed JSON post data.
@@ -313,14 +311,14 @@ function is_stylesheet($path) {
  * Retrieve a first list of files that have to be uploaded and
  * a second list of files that have to be removed.
  * @param payload The parsed JSON post data.
- * @return An array containing two arrays of the form 
+ * @return An array containing two arrays of the form
  *         ['upload' => list, 'delete' => list, 'update_stylesheet' => bool].
  */
 function get_actionable_files($payload) {
 	// Combine all file that have been added and modified in all pushed commits combined.
 	$upload_files = [];		// Files that have to be uploaded to reddit.
 	$delete_files = [];		// Files that have to be removed from reddit.
-	
+
 	// Get a list of commits sorted by ascending timestamp.
 	usort($payload['commits'], 'compare_commit');
 	// Merge the commits into one list.
@@ -334,14 +332,14 @@ function get_actionable_files($payload) {
 		$upload_files = array_merge($upload_files, $commit['added'], $commit['modified']);
 		$delete_files = array_merge($delete_files, $commit['removed']);
 	}
-	// Filter out duplicates, files that occur in multiple commits.		
+	// Filter out duplicates, files that occur in multiple commits.
 	$upload_files = array_unique($upload_files);
 	$delete_files = array_unique($delete_files);
-	
+
 	// Filter out files that are not in assets or
 	$upload_files = array_filter($upload_files, 'file_filter');
 	$delete_files = array_filter($delete_files, 'file_filter');
-	
+
 	return ['upload' => $upload_files, 'delete' => $delete_files];
 }
 
