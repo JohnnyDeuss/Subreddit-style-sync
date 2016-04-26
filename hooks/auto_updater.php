@@ -1,10 +1,10 @@
 <?php
 /*
- * Github script to synchronize subreddit stylesheets and images with multiple
+ * GitHub script to synchronize subreddit stylesheets and images with multiple
  * subreddits that may use them as soon changes are pushed to their repos. It
  * automatically adds new assets and stylesheets and also deletes those that
  * are no longer used.
- * It does this by using Github's webhooks:
+ * It does this by using GitHub's webhooks:
  * @see https://developer.github.com/webhooks/
  * and the reddit API:
  * @see https://www.reddit.com/dev/api
@@ -24,6 +24,7 @@ define('CONFIG_FILE', 'config.php');
 require CONFIG_FILE;
 
 define('USER_AGENT_STRING', 'web_design-stylesheet-updater/0.1');
+define('REDDIT_CHAR_LIMIT', 256);
 
 // Make sure the getallheaders function is available.
 // http://www.php.net/manual/en/function.getallheaders.php#84262
@@ -48,12 +49,15 @@ if (!is_master_branch_commit($payload))
 // Get the OAUTH token to be able to use the reddit API.
 $token = get_oauth_token();
 $actionable_files = get_actionable_files($payload);
+// Stop if there is nothing to upload or delete.
+if (empty($actionable_files['upload']) or empty($actionable_files['upload']))
+	exit('No action required, no changes made to the stylesheet or assets.');
 // Checkout the correct git commit so that we can upload them.
 $commit_id = $payload['after'];
 git_init($commit_id);
 // Upload new/modified files and delete deleted ones.
-upload_files_reddit($actionable_files['upload'], $commit_id);
-delete_files_reddit($actionable_files['delete'], $commit_id);
+upload_files_reddit($actionable_files['upload'], $token, $payload);
+delete_files_reddit($actionable_files['delete'], $token, $payload);
 
 /*
  * Compare two commits based on their timestamp.
@@ -150,7 +154,7 @@ function get_oauth_token() {
  * @param subreddit Name of the subreddit.
  * @return URL to use for OAUTH for the given subreddit.
  */
-function get_oauth_url($subreddit) {
+function get_oauth_sr_api_url($subreddit) {
 	return "https://oauth.reddit.com/r/$subreddit/api";
 }
 
@@ -186,9 +190,9 @@ function api_upload_image($path, $token) {
 	$path_parts = pathinfo($path);
 	$path = git_to_absolute_path($path);
 
-	$url = get_oauth_url($config['subreddit_name']).'/upload_sr_image';
+	$url = get_oauth_sr_api_url($config['subreddit_name']).'/upload_sr_img';
 	$data = [
-		'file' => file_get_contents($path),
+//		'file' => file_get_contents($path),
 		'header' => $upload_type == 'header' ? 1 : 0,
 		'img_type' => strtolower($path_parts['extension']),
 		'name' => $path_parts['filename'],
@@ -197,6 +201,7 @@ function api_upload_image($path, $token) {
 	$result = api_post_request($url, $data, [get_authorization_header($token)]);
 	if ($result === FALSE)
 		error_log("Could not successfully POST file to reddit: $path\n");
+	var_dump($result);
 }
 
 /*
@@ -208,7 +213,7 @@ function api_delete_image($path, $token) {
 	$config = $GLOBALS['config'];
 	$img_name = pathinfo($path, PATHINFO_FILENAME);
 
-	$url = get_oauth_url($config['subreddit_name']).'/delete_sr_image';
+	$url = get_oauth_sr_api_url($config['subreddit_name']).'/delete_sr_image';
 	$data = [
 		'api_type' => 'json',
 		'name' => $img_name,
@@ -219,22 +224,58 @@ function api_delete_image($path, $token) {
 }
 
 /*
+ * Generate a reason string to pass to reddit's API's stylesheet method.
+ * @param payload GitHub's POST payload.
+ * @return A reason string.
+ */
+function get_reason($payload) {
+	// Mention who pushed it and what the latest commit ID head was.
+	$commit_id_head = substr($payload['after'], 0, 7);
+	$user = $payload['pusher']['name'];
+	$reason = "Push by $user($commit_id_head)";
+
+	// Add the commit message titles to clarify what changed.
+	$commits = $payload['commits'];
+	// Sort commits descending by time.
+	usort($commits, function ($a, $b) {
+		return compare_commit($b, $a);
+	});
+	$commit_messages = array_map(function ($commit) {
+			return strtok($commit['message'], "\r\n");
+		}, $commits);
+	// Get only non-empty messages.
+	$commit_messages = array_filter($commit_messages);
+	// Generate the message string.
+	$message_string = implode(', ', $commit_messages);
+	// If the message is not empty now add it to the reason.
+	if (!empty($message_string))
+		$reason = "$reason: $message_string";
+	// Make sure the reason fits in reddit's 256 char limit.
+	if (count($reason) > REDDIT_CHAR_LIMIT)
+		$reason = substr($reason, 0, REDDIT_CHAR_LIMIT-3).'...';
+	return $reason;
+}
+
+/*
  * Set the subreddit stylesheet.
  * @param token An Oauth token.
  * @param content The new content of the stylesheet.
+ * @param payload GitHub's POST payload.
  */
-function api_subreddit_stylesheet($token, $content) {
+function api_subreddit_stylesheet($token, $content, $payload) {
+	$reason = get_reason($payload);
 	$config = $GLOBALS['config'];
-	$url = get_oauth_url($config['subreddit_name']).'/subreddit_stylesheet';
+	$url = get_oauth_sr_api_url($config['subreddit_name']).'/subreddit_stylesheet';
 	$data = [
 		'api_type' => 'json',
 		'op' => 'save',
-		'reason' => 'GitHub push, automatic stylesheet update',
+		'reason' => $reason,
 		'stylesheet_contents' => $content
 	];
 	$result = api_post_request($url, $data, [get_authorization_header($token)]);
 	if ($result === FALSE)
 		error_log("Could not successfully update reddit stylesheet.\n");
+	var_dump($result);
 }
 
 /*
@@ -244,6 +285,7 @@ function api_subreddit_stylesheet($token, $content) {
  * @return The absolute path to the object according to the web server.
  */
 function git_to_absolute_path($git_path) {
+	var_dump($git_path);
 	static $git_root = NULL;
 	if ($git_root === NULL)
 		exec('git rev-parse --show-toplevel', $git_root);
@@ -251,8 +293,7 @@ function git_to_absolute_path($git_path) {
 }
 
 /*
- * Initialize git if it hasn't already been initialized and
- * and checkout the given commit.
+ * Make sure git is available, pull changes and checkout the correct commit.
  * @param commit_id The ID of the latest commit.
  */
 function git_init($commit_id) {
@@ -260,7 +301,7 @@ function git_init($commit_id) {
 	exec('git rev-parse --is-inside-work-tree', $output, $retval);
 	if ($retval != 0 or $output[0] != 'true')
 		exit('The script is not in a git repo.');
-//	exec('git fetch origin', $output, $retval);
+	//exec('git pull origin master', $output, $retval);
 	if ($retval != 0)
 		exit('Git fetch failed. Did you set up git credentials?');
 	exec("git checkout $commit_id", $output, $retval);
@@ -352,29 +393,42 @@ function get_actionable_files($payload) {
  * Delete the files in the given list from reddit.
  * @param delete_list A list of file paths to delete.
  * @param token OAUTH token.
+ * @param payload GitHub's POST payload.
  */
-function delete_files_reddit($delete_list, $token) {
-	foreach ($delete_list as $deleted_file) {
-		if (is_stylesheet($deleted_file))
-			api_subreddit_stylesheet($token, '');
-		else
-			api_delete_image($deleted_file, $token);
-	}
+function delete_files_reddit($delete_list, $token, $payload) {
+	$github_config = $GLOBALS['config']['github'];
+	$is_stylesheet_changed = in_array($github_config['stylesheet_path'], $delete_list);
+	// The assets must be uploaded before the stylesheet itself.
+	if ($is_stylesheet_changed)
+		$upload_list = array_diff($delete_list, [$github_config['stylesheet_path']]);
+
+	// Delete deleted assets.
+	foreach ($delete_list as $deleted_file)
+		api_delete_image($deleted_file, $token);
+	// Delete stylesheet if it was deleted from git.
+	if ($is_stylesheet_changed)
+		api_subreddit_stylesheet($token, '', $payload);
 }
 
 /*
  * Delete the files in the given list from reddit.
  * @param delete_list A list of files to delete.
  * @param token OAUTH token.
+ * @param payload GitHub's POST payload.
  */
-function upload_files_reddit($upload_list, $token) {
+function upload_files_reddit($upload_list, $token, $payload) {
 	$github_config = $GLOBALS['config']['github'];
-	foreach ($upload_list as $upload_file) {
-		if (is_stylesheet($upload_file)) {
-			$content = file_get_contents($github_config['stylesheet_path']);
-			api_subreddit_stylesheet($token, $content);
-		}
-		else
-			api_upload_image($upload_file, $token);
+	$is_stylesheet_changed = in_array($github_config['stylesheet_path'], $upload_list);
+	// The assets must be uploaded before the stylesheet itself.
+	if ($is_stylesheet_changed)
+		$upload_list = array_diff($upload_list, [$github_config['stylesheet_path']]);
+
+	// Upload changed assets.
+	foreach ($upload_list as $upload_file)
+		api_upload_image($upload_file, $token);
+	// Upload stylesheet if it changed on git.
+	if ($is_stylesheet_changed) {
+		$content = file_get_contents(git_to_absolute_path($github_config['stylesheet_path']));
+		api_subreddit_stylesheet($token, $content, $payload);
 	}
 }
