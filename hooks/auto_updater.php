@@ -51,7 +51,6 @@ $actionable_files = get_actionable_files($payload);
 // Checkout the correct git commit so that we can upload them.
 $commit_id = $payload['after'];
 git_init($commit_id);
-var_dump($actionable_files);
 // Upload new/modified files and delete deleted ones.
 upload_files_reddit($actionable_files['upload'], $commit_id);
 delete_files_reddit($actionable_files['delete'], $commit_id);
@@ -99,13 +98,13 @@ function is_valid_image_format($path) {
  */
 function get_upload_type($path) {
 	$github_config = $GLOBALS['config']['github'];
-	if ($path == $github_config['header_path'])			// Regular header.
+	if ($path == $github_config['header_path'])				// Regular header.
 		return 'header';
 	if ($path == $github_config['header_mobile_path'])		// Mobile header/banner.
 		return 'banner';
 	if ($path == $github_config['icon_mobile_path'])		// Mobile icon.
 		return 'icon';
-	return 'img';									// Regular image.
+	return 'img';											// Regular image.
 }
 
 /*
@@ -150,7 +149,7 @@ function get_oauth_token() {
  * @return URL to use for OAUTH for the given subreddit.
  */
 function get_oauth_url($subreddit) {
-	return "https://oauth.reddit.com/r/$subreddit/api";
+	return "http://oauth.reddit.com/r/$subreddit/api";
 }
 
 /*
@@ -158,9 +157,13 @@ function get_oauth_url($subreddit) {
  * @param url URL to post to.
  * @param data Associative array of key-value pairs to pass.
  * @param headers Array of headers to add.
+ * @param use_multipart Whether to use a multipart content-type, used for file transfer.
  */
-function api_post_request($url, $data, $headers) {
-	array_push($headers, 'Content-Type: application/x-www-form-urlencoded');
+function api_post_request($url, $data, $headers, $use_multipart=FALSE) {
+	if ($use_multipart)
+		array_push($headers, 'Content-Type: application/x-www-form-urlencoded');
+	else
+		array_push($headers, 'Content-Type: application/x-www-form-urlencoded');
 	$options = [
 		'http' => [
 			'method'  => 'POST',
@@ -183,6 +186,7 @@ function api_upload_image($path, $token) {
 	$config = $GLOBALS['config'];
 	$upload_type = get_upload_type($path);
 	$path_parts = pathinfo($path);
+	$path = git_to_absolute_path($path);
 
 	$url = get_oauth_url($config['subreddit_name']).'/upload_sr_image';
 	$data = [
@@ -192,7 +196,7 @@ function api_upload_image($path, $token) {
 		'name' => $path_parts['filename'],
 		'upload_type' => $upload_type,
 	];
-	$result = api_post_request($url, $data, [get_authorization_header($token)]);
+	$result = api_post_request($url, $data, [get_authorization_header($token)], TRUE);
 	if ($result === FALSE)
 		error_log("Could not successfully POST file to reddit: $path\n");
 }
@@ -243,9 +247,9 @@ function api_subreddit_stylesheet($token, $content) {
  */
 function git_to_absolute_path($git_path) {
 	static $git_root = NULL;
-	if ($git_path === NULL)
+	if ($git_root === NULL)
 		exec('git rev-parse --show-toplevel', $git_root);
-	return $git_root.PATH_SEPARATOR.$git_path;
+	return $git_root[0].'/'.$git_path;
 }
 
 /*
