@@ -155,7 +155,7 @@ function get_oauth_token() {
  * @return URL to use for OAUTH for the given subreddit.
  */
 function get_oauth_sr_api_url($subreddit) {
-	return "https://oauth.reddit.com/r/$subreddit/api";
+	return "http://oauth.reddit.com/r/$subreddit/api";
 }
 
 /*
@@ -267,6 +267,18 @@ function api_delete_image($path, $token) {
 }
 
 /*
+ * Check whether a commit affects the stylesheet.
+ * @param commit Commit to check.
+ * @return Whether the commit affects the stylesheet.
+ */
+function affects_stylesheet($commit) {
+	$github_config = $GLOBALS['config']['github'];
+	return in_array($github_config['stylesheet_path'], $commit['added']) or
+			in_array($github_config['stylesheet_path'], $commit['modified']) or
+			in_array($github_config['stylesheet_path'], $commit['removed']);
+}
+
+/*
  * Generate a reason string to pass to reddit's API's stylesheet method.
  * @param payload GitHub's POST payload.
  * @return A reason string.
@@ -279,6 +291,8 @@ function get_reason($payload) {
 
 	// Add the commit message titles to clarify what changed.
 	$commits = $payload['commits'];
+	// Get only the commits that affect the stylesheet.
+	$commits = array_filter($commits, 'affects_stylesheet');
 	// Sort commits descending by time.
 	usort($commits, function ($a, $b) {
 		return compare_commit($b, $a);
@@ -318,6 +332,8 @@ function api_subreddit_stylesheet($token, $content, $payload) {
 	$result = api_post_request($url, $data, [get_authorization_header($token)]);
 	if ($result === FALSE)
 		error_log("Could not successfully update reddit stylesheet.\n");
+	var_dump($result);
+	var_dump($reason);
 }
 
 /*
@@ -455,7 +471,7 @@ function delete_files_reddit($delete_list, $token, $payload) {
  * Delete the files in the given list from reddit.
  * @param delete_list A list of files to delete.
  * @param token OAUTH token.
- * @param payload GitHub's POST payload.
+ * @param payload GitHub's full POST payload.
  */
 function upload_files_reddit($upload_list, $token, $payload) {
 	$github_config = $GLOBALS['config']['github'];
