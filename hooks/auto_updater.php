@@ -108,20 +108,22 @@ function get_upload_type($path) {
 }
 
 /*
- * Calculate the base64 encoding of the given string without padding it.
- * @param s String to encode.
- * @return Unpadded base64 string.
+ * Get the HTTP basic authorization header.
+ * @param username Username to use for authentication.
+ * @param password Password to use for authentication.
+ * @return The HTTP basic authorization header.
  */
-function base64_encode_unpadded($s) {
-	return base64_encode($s);
+function get_basic_authentication_header($username, $password) {
+	return 'Authorization: Basic '.base64_encode("$username:$password");
 }
 
 /*
  * Get the HTTP authorization header for the OAUTH token.
  * @param token The OAUTH token.
+ * @return The HTTP OAUTH authorization header.
  */
 function get_authorization_header($token) {
-	return 'Authorization: bearer ' . $token;
+	return 'Authorization: bearer '.$token;
 }
 /*
  * Gets an OAUTH token for API authentication.
@@ -136,7 +138,7 @@ function get_oauth_token() {
 		'password' => $oauth_config['mod_password']
 	];
 	// OAUTH uses basic access authentication, add in header.
-	$headers = ["Authorization: Basic ".base64_encode_unpadded("$oauth_config[client_id]:$oauth_config[secret]")];
+	$headers = [get_basic_authentication_header($oauth_config['client_id'], $oauth_config['secret'])];
 	$result = api_post_request($url, $data, $headers);
 	if ($result === FALSE)
 		exit('Could not get an OAUTH token.');
@@ -149,7 +151,7 @@ function get_oauth_token() {
  * @return URL to use for OAUTH for the given subreddit.
  */
 function get_oauth_url($subreddit) {
-	return "http://oauth.reddit.com/r/$subreddit/api";
+	return "https://oauth.reddit.com/r/$subreddit/api";
 }
 
 /*
@@ -157,13 +159,9 @@ function get_oauth_url($subreddit) {
  * @param url URL to post to.
  * @param data Associative array of key-value pairs to pass.
  * @param headers Array of headers to add.
- * @param use_multipart Whether to use a multipart content-type, used for file transfer.
  */
-function api_post_request($url, $data, $headers, $use_multipart=FALSE) {
-	if ($use_multipart)
-		array_push($headers, 'Content-Type: application/x-www-form-urlencoded');
-	else
-		array_push($headers, 'Content-Type: application/x-www-form-urlencoded');
+function api_post_request($url, $data, $headers) {
+	array_push($headers, 'Content-Type: application/x-www-form-urlencoded');
 	$options = [
 		'http' => [
 			'method'  => 'POST',
@@ -196,7 +194,7 @@ function api_upload_image($path, $token) {
 		'name' => $path_parts['filename'],
 		'upload_type' => $upload_type,
 	];
-	$result = api_post_request($url, $data, [get_authorization_header($token)], TRUE);
+	$result = api_post_request($url, $data, [get_authorization_header($token)]);
 	if ($result === FALSE)
 		error_log("Could not successfully POST file to reddit: $path\n");
 }
