@@ -155,7 +155,7 @@ function get_oauth_token() {
  * @return URL to use for OAUTH for the given subreddit.
  */
 function get_oauth_sr_api_url($subreddit) {
-	return "http://oauth.reddit.com/r/$subreddit/api";
+	return "https://oauth.reddit.com/r/$subreddit/api";
 }
 
 /*
@@ -179,7 +179,7 @@ function http_build_multipart_query($data, $file_path, $mime_boundary) {
 	$content = file_get_contents($file_path);
 	// Generate the lines for the file.
 	array_push($lines, "--$mime_boundary");
-	array_push($lines, "Content-Disposition: form-data; name=\"file\", filename=\"$filename\"");
+	array_push($lines, "Content-Disposition: form-data; name=\"file\"; filename=\"$filename\"");
 	array_push($lines, "Content-Type: ".mime_content_type($file_path));
 	array_push($lines, "");
 	array_push($lines, $content);
@@ -235,7 +235,6 @@ function api_upload_image($path, $token) {
 
 	$url = get_oauth_sr_api_url($config['subreddit_name']).'/upload_sr_img';
 	$data = [
-		'file' => file_get_contents($path),
 		'header' => $upload_type == 'header' ? 1 : 0,
 		'img_type' => strtolower($path_parts['extension']),
 		'name' => $path_parts['filename'],
@@ -332,8 +331,9 @@ function api_subreddit_stylesheet($token, $content, $payload) {
 	$result = api_post_request($url, $data, [get_authorization_header($token)]);
 	if ($result === FALSE)
 		error_log("Could not successfully update reddit stylesheet.\n");
-	var_dump($result);
-	var_dump($reason);
+	if (!empty($result['errors']))
+		error_log("An error occurred while updating the stylesheet.\n".
+				"Make sure all used assets are either in the assets folder on git or already manually uploaded to reddit.\n");
 }
 
 /*
@@ -382,7 +382,7 @@ function is_verified_sender($raw_payload, $secret) {
 
 	$hashed_payload = 'sha1='.hash_hmac('sha1', $raw_payload, $secret);
 	if ($hashed_payload === FALSE)
-		exit('The current PHP intallation does not support the required HMAC SHA1 hashing algorithm.');
+		exit('The current PHP installation does not support the required HMAC SHA1 hashing algorithm.');
 	// Compare the hash to the given signature.
 	$headers = getallheaders();
 	if (!isset($headers['X-Hub-Signature']))
@@ -483,6 +483,7 @@ function upload_files_reddit($upload_list, $token, $payload) {
 	// Upload changed assets.
 	foreach ($upload_list as $upload_file)
 		api_upload_image($upload_file, $token);
+
 	// Upload stylesheet if it changed on git.
 	if ($is_stylesheet_changed) {
 		$content = file_get_contents(git_to_absolute_path($github_config['stylesheet_path']));
