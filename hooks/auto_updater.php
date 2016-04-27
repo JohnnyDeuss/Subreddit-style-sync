@@ -231,7 +231,7 @@ function api_upload_image($path, $token) {
 	$config = $GLOBALS['config'];
 	$upload_type = get_upload_type($path);
 	$path_parts = pathinfo($path);
-	$path = git_to_absolute_path($path);
+	$local_path = git_to_absolute_path($path);
 
 	$url = get_oauth_sr_api_url($config['subreddit_name']).'/upload_sr_img';
 	$data = [
@@ -240,10 +240,12 @@ function api_upload_image($path, $token) {
 		'name' => $path_parts['filename'],
 		'upload_type' => $upload_type,
 	];
-	$result = api_post_request($url, $data, [get_authorization_header($token)], $path);
+	$result = api_post_request($url, $data, [get_authorization_header($token)], $local_path);
 	if ($result === FALSE)
-		error_log("Could not successfully POST file to reddit: $path\n");
-	var_dump($result);
+		error_log("Could not successfully POST file to reddit: $local_path\n");
+	if (!empty($result['errors']))
+		error_log("Could not upload an image ($local_path), check that it fits within reddits guidelines:\n".
+				"<=500kb, jpg or png\n");
 }
 
 /*
@@ -263,6 +265,8 @@ function api_delete_image($path, $token) {
 	$result = api_post_request($url, $data, [get_authorization_header($token)]);
 	if ($result === FALSE)
 		error_log("Could not successfully delelte file from reddit: $path\n");
+	if (!empty($result['errors']))
+		error_log("Could not delete an image ($path), it may have already been deleted manually.\n");
 }
 
 /*
