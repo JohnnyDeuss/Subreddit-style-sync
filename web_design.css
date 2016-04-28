@@ -22,7 +22,7 @@
 
 
 			-------------------------------------------------------------------------- */
-
+.redditname { font-size: 100pt; }
 		*,:before,:after{-webkit-box-sizing:initial;-moz-box-sizing:initial;box-sizing:initial}
 		:not(#tb-bottombar):not(#tb-bottombar-hidden),:before,:after{-webkit-box-sizing:border-box;-moz-box-sizing:border-box;box-sizing:border-box}
 		
@@ -2700,7 +2700,7 @@
 
 						.res #searchexpando .searchexpando-submit {display: none;}
 
-					.res h1.hover.redditname {margin-bottom: 28px;}
+					.res h1.hover.redditname {margin-bottom: 110px;}
 					.res .titlebox .fancy-toggle-button .add, .res .fancy-toggle-button .remove {top: -78px;}
 					.res .titlebox .tagline {margin-top: -14px;}
 					.res .titlebox span.subscribers, .res .titlebox .users-online, .res .titlebox .number {top: -32px;}

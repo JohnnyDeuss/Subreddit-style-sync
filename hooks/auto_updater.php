@@ -24,7 +24,7 @@ define('CONFIG_FILE', 'config.php');
 require CONFIG_FILE;
 
 define('USER_AGENT_STRING', 'web_design-stylesheet-updater/0.1');
-define('REDDIT_CHAR_LIMIT', 256);
+define('REDDIT_REASON_LIMIT', 256);
 
 // Make sure the getallheaders function is available.
 // http://www.php.net/manual/en/function.getallheaders.php#84262
@@ -38,26 +38,85 @@ if (!function_exists('getallheaders')) {
 	}
 }
 
-// PHP sends JSON in the POST body, not the standard POST key-value pairs, but as JSON.
+// GitHub sends JSON in the body, not the standard POST key-value pairs.
 $raw_payload = file_get_contents('php://input');
 //if (!is_verified_sender($raw_payload, $config['github']['secret']))
 //	exit('The secret is wrong, failed to verify sender.');
 // Parse the JSON payload.
 $payload = json_decode($raw_payload, TRUE);
-if (!is_master_branch_commit($payload))
+// Only act upon pushes and releases of the master branch.
+if (!is_master_branch_event($payload))
 	exit('No action required, not pushed to master branch.');
+// Handle push and release event slightly different.
+$headers = getallheaders();
+if (!array_key_exists('X-GitHub-Event', $headers))
+	exit('Incorrect POST requst, no event type specified.');
+$event_type = $headers['X-GitHub-Event'];
+if ($event_type == 'push') {
+	// Remember the state before this commit and the state after.
+	$before = $payload['before'];
+	$after = $payload['after'];
+}
+else if ($event_type == 'release') {
+	// Ignore pre-releases and drafts.
+	if ($payload['release']['prerelease'] or $payload['release']['draft'])
+		exit('Not a full release, no action required.');
+	// Remember the state before this commit and the state after.
+	$before = get_previous_release_tag($payload['repository']['name']);
+	$after = $payload['release']['tag_name'];
+}
+else
+	exit("This script only supports syncing for the  'push' and 'release' event, but it received a '$event_type' event.".
+		'Please select a correct event type.');
+// Init git and checkout the 'after' state.
+git_init($after);
 // Get the OAUTH token to be able to use the reddit API.
 $token = get_oauth_token();
-$actionable_files = get_actionable_files($payload);
+$diff_files = get_diff_files($before, $after);
 // Stop if there is nothing to upload or delete.
-if (empty($actionable_files['upload']) or empty($actionable_files['upload']))
+if (empty($diff_files['upload']) and empty($diff_files['delete']))
 	exit('No action required, no changes made to the stylesheet or assets.');
-// Checkout the correct git commit so that we can upload them.
-$commit_id = $payload['after'];
-git_init($commit_id);
+// Get only the files relevant to us.
+$diff_files = filter_style_files($diff_files);
 // Upload new/modified files and delete deleted ones.
-upload_files_reddit($actionable_files['upload'], $token, $payload);
-delete_files_reddit($actionable_files['delete'], $token, $payload);
+upload_files_reddit($diff_files['upload'], $token, $payload);
+delete_files_reddit($diff_files['delete'], $token, $payload);
+
+/*
+ * Get the tag of the previous release.
+ * @param repo_name Name of the repository.
+ * @return The tag of the previous release or NULL if there isn't any.
+ */
+function get_previous_release_tag($repo_name) {
+	$json = file_get_contents("https//api.github.com/repos/$repo_name/releases");
+	if ($json === false)
+		exit('Could not look up the previous version.');
+	$releases = json_decode($json, TRUE);
+	if (count($releases) == 1)
+		return NULL;
+	usort($releases, 'compare_release');
+	return $releases[1]['tag_name'];
+}
+
+/*
+ * Check whether the event happened in the master branch.
+ * @param payload The parsed JSON post data.
+ * @return Whether the event happened in the master branch.
+ */
+function is_master_branch_event($payload) {
+	return !empty($payload['ref']) and $payload['ref'] == 'refs/heads/master'	// Push case.
+		or $payload['release']['target_commitish'] == 'master';					// Release case.
+}
+
+/*
+ * Compare two releases based on publishing date.
+ * @param a First release associative array.
+ * @param b Second release associative array.
+ * @return $a=$b -> 0, $a<$b -> -1 and $a>$b -> 1.
+ */
+function compare_release($a, $b) {
+	return strtotime($a['released']['published_at']) <=> strtotime($b['released']['published_at']);
+}
 
 /*
  * Compare two commits based on their timestamp.
@@ -70,6 +129,49 @@ function compare_commit($a, $b) {
 }
 
 /*
+ * Get a list of files that need to be uploaded or removed.
+ * Also check if the stylesheet needs to be updated.
+ * @param before Reference to the git before state, NULL if there isn't one.
+ * @param after Reference to the git after state.
+ * @return An array containing two arrays of the form
+ *         ['upload' => list, 'delete' => list].
+ */
+function get_diff_files($before, $after) {
+	if ($before === NULL) {
+		// If there is no before state, simply return files in the current git state.
+		exec("git ls-files", $output, $retval);
+		return $output;
+	}
+	else {
+		// Ask git what has changed between these states.
+		exec("git diff --name-status $before $after", $output, $retval);
+		if ($retval !== 0)
+			exit("An error occurred while finding the git diff.\n");
+		$diff_files = [
+			'upload' => array_filter($output, function ($x) { return in_array(substr($x, 0, 1), ['A', 'C', 'M', 'R']); }),
+			'delete' => array_filter($output, function ($x) { return substr($x, 0, 1) == 'D'; })
+		];
+		// Filter out the status character, so only the paths remain.
+		$diff_files['upload'] = array_map(function ($x) { return trim(substr($x, 1)); }, $diff_files['upload']);
+		$diff_files['delete'] = array_map(function ($x) { return trim(substr($x, 1)); }, $diff_files['delete']);
+
+	}
+
+	return $diff_files;
+}
+
+/*
+ * Filter out any files that aren't relevant.
+ * @param files List off files.
+ * @return Filtered list.
+ */
+function filter_style_files($files) {
+	$files['upload'] = array_filter($files['upload'], 'file_filter');
+	$files['delete'] = array_filter($files['delete'], 'file_filter');
+	return $files;
+}
+
+/*
  * Check if a file is an asset or stylesheet.
  * @param file The git file path.
  * @return Whether the file is an asset or stylesheet.
@@ -78,8 +180,8 @@ function file_filter($file) {
 	$github_config = $GLOBALS['config']['github'];
 	// Get the directory part, to check if the file is inside the assets directory.
 	$dir = pathinfo($file, PATHINFO_DIRNAME);
-	return $file == $github_config['stylesheet_path'] or							// Stylesheet.
-		($dir == rtrim($github_config['assets_dir'], '/') and is_valid_image_format($file));	// Valid image.
+	return $file == $github_config['stylesheet_path'] or											// Stylesheet.
+			($dir == rtrim($github_config['assets_dir'], '/') and is_valid_image_format($file));	// Valid image.
 }
 
 /*
@@ -242,9 +344,9 @@ function api_upload_image($path, $token) {
 	];
 	$result = api_post_request($url, $data, [get_authorization_header($token)], $local_path);
 	if ($result === FALSE)
-		error_log("Could not successfully POST file to reddit: $local_path\n");
-	if (!empty($result['errors']))
-		error_log("Could not upload an image ($local_path), check that it fits within reddits guidelines:\n".
+		echo("Could not successfully POST file to reddit: $local_path\n");
+	else if (!empty(json_decode($result, TRUE)['json']['errors']))
+		echo("Could not upload an image ($local_path), check that it fits within reddits guidelines:\n".
 				"<=500kb, jpg or png\n");
 }
 
@@ -257,16 +359,16 @@ function api_delete_image($path, $token) {
 	$config = $GLOBALS['config'];
 	$img_name = pathinfo($path, PATHINFO_FILENAME);
 
-	$url = get_oauth_sr_api_url($config['subreddit_name']).'/delete_sr_image';
+	$url = get_oauth_sr_api_url($config['subreddit_name']).'/delete_sr_img';
 	$data = [
 		'api_type' => 'json',
-		'name' => $img_name,
+		'img_name' => $img_name,
 	];
 	$result = api_post_request($url, $data, [get_authorization_header($token)]);
 	if ($result === FALSE)
-		error_log("Could not successfully delelte file from reddit: $path\n");
-	if (!empty($result['errors']))
-		error_log("Could not delete an image ($path), it may have already been deleted manually.\n");
+		echo("Could not successfully delelte file from reddit: $path\n");
+	else if (!empty(json_decode($result, TRUE)['json']['errors']))
+		echo("Could not delete an image ($path), it may have already been deleted manually.\n");
 }
 
 /*
@@ -311,8 +413,8 @@ function get_reason($payload) {
 	if (!empty($message_string))
 		$reason = "$reason: $message_string";
 	// Make sure the reason fits in reddit's 256 char limit.
-	if (count($reason) > REDDIT_CHAR_LIMIT)
-		$reason = substr($reason, 0, REDDIT_CHAR_LIMIT-3).'...';
+	if (count($reason) > REDDIT_REASON_LIMIT)
+		$reason = substr($reason, 0, REDDIT_REASON_LIMIT-3).'...';
 	return $reason;
 }
 
@@ -334,9 +436,9 @@ function api_subreddit_stylesheet($token, $content, $payload) {
 	];
 	$result = api_post_request($url, $data, [get_authorization_header($token)]);
 	if ($result === FALSE)
-		error_log("Could not successfully update reddit stylesheet.\n");
-	if (!empty($result['errors']))
-		error_log("An error occurred while updating the stylesheet.\n".
+		echo("Could not successfully update reddit stylesheet.\n");
+	else if (!empty(json_decode($result, TRUE)['json']['errors']))
+		echo("An error occurred while updating the stylesheet.\n".
 				"Make sure all used assets are either in the assets folder on git or already manually uploaded to reddit.\n");
 }
 
@@ -355,9 +457,9 @@ function git_to_absolute_path($git_path) {
 
 /*
  * Make sure git is available, pull changes and checkout the correct commit.
- * @param commit_id The ID of the latest commit.
+ * @param git_ref Reference to a git state to checkout.
  */
-function git_init($commit_id) {
+function git_init($git_ref) {
 	// Check if in a git repo.
 	exec('git rev-parse --is-inside-work-tree', $output, $retval);
 	if ($retval != 0 or $output[0] != 'true')
@@ -365,7 +467,7 @@ function git_init($commit_id) {
 	//exec('git pull origin master', $output, $retval);
 	if ($retval != 0)
 		exit('Git fetch failed. Did you set up git credentials?');
-	exec("git checkout $commit_id", $output, $retval);
+	exec("git checkout $git_ref", $output, $retval);
 	if ($retval != 0)
 		exit('Unable to checkout the given commit.');
 }
@@ -380,7 +482,7 @@ function is_verified_sender($raw_payload, $secret) {
 	// Verify the POST by comparing the HTTP_X_HUB_SIGNATURE header
 	// with the HMAC hash of the payload.
 	if ($secret === NULL) {
-		error_log('Please set the github secret in the config.');
+		echo('Please set the github secret in the config.');
 		return TRUE;
 	}
 
@@ -396,15 +498,6 @@ function is_verified_sender($raw_payload, $secret) {
 }
 
 /*
- * Check whether the commit happened in the master branch.
- * @param payload The parsed JSON post data.
- * @return Whether the happened in the master branch.
- */
-function is_master_branch_commit($payload) {
-	return $payload['ref'] == 'refs/heads/master';
-}
-
-/*
  * Check whether a file path is that of the stylesheet.
  * @param path A git path.
  * @return Whether the file path is that of the stylesheet.
@@ -412,42 +505,6 @@ function is_master_branch_commit($payload) {
 function is_stylesheet($path) {
 	$github_config = $GLOBALS['config']['github'];
 	return $path == $github_config['stylesheet_path'];
-}
-
-/*
- * Retrieve a first list of files that have to be uploaded and
- * a second list of files that have to be removed.
- * @param payload The parsed JSON post data.
- * @return An array containing two arrays of the form
- *         ['upload' => list, 'delete' => list, 'update_stylesheet' => bool].
- */
-function get_actionable_files($payload) {
-	// Combine all file that have been added and modified in all pushed commits combined.
-	$upload_files = [];		// Files that have to be uploaded to reddit.
-	$delete_files = [];		// Files that have to be removed from reddit.
-
-	// Get a list of commits sorted by ascending timestamp.
-	usort($payload['commits'], 'compare_commit');
-	// Merge the commits into one list.
-	foreach ($payload['commits'] as $commit) {
-		// Any files that are removed in this commit need to be removed from the existing
-		// update list, they were added/modified in an already commit, but removed within the same push.
-		$upload_files = array_diff($upload_files, $commit['removed']);
-		// Do the same for deleted files that have now been added again.
-		$delete_files = array_diff($delete_files, $commit['added'], $commit['modified']);
-		// Expand the update and delete list with the new files.
-		$upload_files = array_merge($upload_files, $commit['added'], $commit['modified']);
-		$delete_files = array_merge($delete_files, $commit['removed']);
-	}
-	// Filter out duplicates, files that occur in multiple commits.
-	$upload_files = array_unique($upload_files);
-	$delete_files = array_unique($delete_files);
-
-	// Filter out files that are not in assets or
-	$upload_files = array_filter($upload_files, 'file_filter');
-	$delete_files = array_filter($delete_files, 'file_filter');
-
-	return ['upload' => $upload_files, 'delete' => $delete_files];
 }
 
 /*
