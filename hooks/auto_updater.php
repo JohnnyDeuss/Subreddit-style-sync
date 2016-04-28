@@ -400,33 +400,40 @@ function affects_stylesheet($commit) {
  * @return A reason string.
  */
 function get_reason($payload) {
-	// Mention who pushed it and what the latest commit ID head was.
-	$commit_id_head = substr($payload['after'], 0, 7);
-	$user = $payload['pusher']['name'];
-	$reason = "Push by $user($commit_id_head)";
+	$event_type = getallheaders()['X-GitHub-Event'];
+	if ($event_type == "push") {
+		// Mention who pushed it and what the latest commit ID head was.
+		$commit_id_head = substr($payload['after'], 0, 7);
+		$user = $payload['pusher']['name'];
+		$reason = "Push by $user($commit_id_head)";
 
-	// Add the commit message titles to clarify what changed.
-	$commits = $payload['commits'];
-	// Get only the commits that affect the stylesheet.
-	$commits = array_filter($commits, 'affects_stylesheet');
-	// Sort commits descending by time.
-	usort($commits, function ($a, $b) {
-		return compare_commit($b, $a);
-	});
-	$commit_messages = array_map(function ($commit) {
+		// Add the commit message titles to clarify what changed.
+		$commits = $payload['commits'];
+		// Get only the commits that affect the stylesheet.
+		$commits = array_filter($commits, 'affects_stylesheet');
+		// Sort commits descending by time.
+		usort($commits, function ($a, $b) {
+			return compare_commit($b, $a);
+		});
+		$commit_messages = array_map(function ($commit) {
 			return strtok($commit['message'], "\r\n");
 		}, $commits);
-	// Get only non-empty messages.
-	$commit_messages = array_filter($commit_messages);
-	// Generate the message string.
-	$message_string = implode(', ', $commit_messages);
-	// If the message is not empty now add it to the reason.
-	if (!empty($message_string))
-		$reason = "$reason: $message_string";
-	// Make sure the reason fits in reddit's 256 char limit.
-	if (count($reason) > REDDIT_REASON_LIMIT)
-		$reason = substr($reason, 0, REDDIT_REASON_LIMIT-3).'...';
-	return $reason;
+		// Get only non-empty messages.
+		$commit_messages = array_filter($commit_messages);
+		// Generate the message string.
+		$message_string = implode(', ', $commit_messages);
+		// If the message is not empty now add it to the reason.
+		if (!empty($message_string))
+			$reason = "$reason: $message_string";
+		// Make sure the reason fits in reddit's 256 char limit.
+		if (count($reason) > REDDIT_REASON_LIMIT)
+			$reason = substr($reason, 0, REDDIT_REASON_LIMIT - 3) . '...';
+		return $reason;
+	}
+	else {
+		$release_tag = $payload['release']['tag_name'];
+		return "Release $release_tag";
+	}
 }
 
 /*
