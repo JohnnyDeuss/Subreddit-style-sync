@@ -83,6 +83,17 @@ upload_files_reddit($diff_files['upload'], $token, $payload);
 delete_files_reddit($diff_files['delete'], $token, $payload);
 
 /*
+ * Print an error message and make syure GitHub shows that an error occured.
+ * @param msg Message to pass to GitGub.
+ */
+function print_error($msg) {
+	// Return an error code.
+	// header($_SERVER["SERVER_PROTOCOL"]." 500 Internal Server Error", true, 500);
+	print($msg);
+	error_log($msg);
+}
+
+/*
  * Get the tag of the previous release.
  * @param repo_name Name of the repository.
  * @return The tag of the previous release or NULL if there isn't any.
@@ -344,9 +355,9 @@ function api_upload_image($path, $token) {
 	];
 	$result = api_post_request($url, $data, [get_authorization_header($token)], $local_path);
 	if ($result === FALSE)
-		echo("Could not successfully POST file to reddit: $local_path\n");
+		print_error("Could not successfully POST file to reddit: $local_path\n");
 	else if (!empty(json_decode($result, TRUE)['json']['errors']))
-		echo("Could not upload an image ($local_path), check that it fits within reddits guidelines:\n".
+		print_error("Could not upload an image ($local_path), check that it fits within reddits guidelines:\n".
 				"<=500kb, jpg or png\n");
 }
 
@@ -366,9 +377,9 @@ function api_delete_image($path, $token) {
 	];
 	$result = api_post_request($url, $data, [get_authorization_header($token)]);
 	if ($result === FALSE)
-		echo("Could not successfully delelte file from reddit: $path\n");
+		print_error("Could not successfully delete file from reddit: $path\n");
 	else if (!empty(json_decode($result, TRUE)['json']['errors']))
-		echo("Could not delete an image ($path), it may have already been deleted manually.\n");
+		print_error("Could not delete an image ($path), it may have already been deleted manually.\n");
 }
 
 /*
@@ -436,10 +447,10 @@ function api_subreddit_stylesheet($token, $content, $payload) {
 	];
 	$result = api_post_request($url, $data, [get_authorization_header($token)]);
 	if ($result === FALSE)
-		echo("Could not successfully update reddit stylesheet.\n");
+		print_error("Could not successfully update reddit stylesheet.\n");
 	else if (!empty(json_decode($result, TRUE)['json']['errors']))
-		echo("An error occurred while updating the stylesheet.\n".
-				"Make sure all used assets are either in the assets folder on git or already manually uploaded to reddit.\n");
+		print_error("An error occurred while updating the stylesheet.\n".
+				"Make sure all used assets are either in the assets folder on git or already manually uploaded to reddit.");
 }
 
 /*
@@ -482,7 +493,7 @@ function is_verified_sender($raw_payload, $secret) {
 	// Verify the POST by comparing the HTTP_X_HUB_SIGNATURE header
 	// with the HMAC hash of the payload.
 	if ($secret === NULL) {
-		echo('Please set the github secret in the config.');
+		print_error('Please set the github secret in the config.');
 		return TRUE;
 	}
 
@@ -536,18 +547,17 @@ function delete_files_reddit($delete_list, $token, $payload) {
  */
 function upload_files_reddit($upload_list, $token, $payload) {
 	$github_config = $GLOBALS['config']['github'];
-	$is_stylesheet_changed = in_array($github_config['stylesheet_path'], $upload_list);
+	// Remove the stylesheet_path, it has to be handled differently.
+	$upload_list = array_diff($upload_list, [$github_config['stylesheet_path']]);
+
 	// The assets must be uploaded before the stylesheet itself.
-	if ($is_stylesheet_changed)
-		$upload_list = array_diff($upload_list, [$github_config['stylesheet_path']]);
 
 	// Upload changed assets.
 	foreach ($upload_list as $upload_file)
 		api_upload_image($upload_file, $token);
 
-	// Upload stylesheet if it changed on git.
-	if ($is_stylesheet_changed) {
-		$content = file_get_contents(git_to_absolute_path($github_config['stylesheet_path']));
-		api_subreddit_stylesheet($token, $content, $payload);
-	}
+	// Always upload the stylesheet, since forgetting to upload an image would result in failure when trying to upload
+	// the stylesheet. The stylesheet would only be uploaded again if it was changed again.
+	$content = file_get_contents(git_to_absolute_path($github_config['stylesheet_path']));
+	api_subreddit_stylesheet($token, $content, $payload);
 }
